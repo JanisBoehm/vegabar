@@ -36,6 +36,9 @@ GC 			gc;
 Drw* drw;
 
 pthread_mutex_t globalmutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_t updatetime_thread;
+pthread_mutex_t cond_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t updatetime_cond = PTHREAD_COND_INITIALIZER;
 
 
 int w, h;
@@ -372,8 +375,13 @@ make_new_line:
 
 void
 sig_handler(int sig) {
-	if (sig == SIGINT)
+	if (sig == SIGINT) {
+		pthread_mutex_lock(&globalmutex);
 		running = 0;
+		pthread_mutex_unlock(&globalmutex);
+		pthread_cond_broadcast(&updatetime_cond);
+		fprintf(stderr, "handling SIGINT.\n");
+	}
 }
 
 void
@@ -390,17 +398,30 @@ void*
 updatedate_thr(void* arg) {
 	time_t tt;
 	struct tm t;
+	struct timespec ts;
+	int f_running;
 
+	pthread_mutex_lock(&globalmutex);
+	f_running = running;
+	pthread_mutex_unlock(&globalmutex);
 
-	while(running) {
+	while(f_running) {
 		time(&tt);
 		t = *localtime(&tt);
-		sleep(60-t.tm_sec);
+		clock_gettime(CLOCK_REALTIME, &ts);
+		ts.tv_sec += (60-t.tm_sec);
+
+		pthread_mutex_lock(&cond_mutex);
+		pthread_cond_timedwait(&updatetime_cond, &cond_mutex, &ts);
+		pthread_mutex_unlock(&cond_mutex);
+
 		pthread_mutex_lock(&globalmutex);
 		redraw();
+		f_running = running;
 		pthread_mutex_unlock(&globalmutex);
 	}
 
+	fprintf(stderr, "ending updatedate thread.\n");
 	return NULL;
 }
 
@@ -409,7 +430,6 @@ updatedate_thr(void* arg) {
 
 int
 main(int argc, char** argv) {
-	pthread_t updatetime_thread;
 	XEvent ev;
 
 	{
@@ -426,6 +446,7 @@ main(int argc, char** argv) {
 		die("error creating thread.\n");
 
 	while (running) {
+		fprintf(stderr, "loop\n");
 		XNextEvent(dpy, &ev);
 		if (XFilterEvent(&ev, None))
 			continue;
@@ -448,6 +469,7 @@ main(int argc, char** argv) {
 	}
 
 	pthread_join(updatetime_thread, NULL);
+	fprintf(stderr, "joining updatetime thread.\n");
 
 	while (w > 1) {
 		w -= 30;
